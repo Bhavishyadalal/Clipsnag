@@ -28,20 +28,15 @@ else:
     app.logger.warning(f"❌ Cookies file NOT found at {COOKIES_FILE}. Falling back to Android client.")
     COOKIES_AVAILABLE = False
 
-def get_ydl_opts(use_cookies=True):
+def get_ydl_opts():
     opts = {
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
     }
-    if use_cookies and COOKIES_AVAILABLE:
+    if COOKIES_AVAILABLE:
         opts['cookiefile'] = COOKIES_FILE
-        opts['extractor_args'] = {
-            'youtube': {
-                'player_client': ['web'],
-            }
-        }
-        app.logger.info("Using cookies with web client.")
+        app.logger.info("Using cookies with default client.")
     else:
         opts['extractor_args'] = {
             'youtube': {
@@ -52,7 +47,7 @@ def get_ydl_opts(use_cookies=True):
     return opts
 
 def fetch_formats(url):
-    ydl_opts = get_ydl_opts(use_cookies=COOKIES_AVAILABLE)
+    ydl_opts = get_ydl_opts()
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -129,7 +124,6 @@ def download_endpoint():
     cmd = ['yt-dlp', '-f', format_id, '-o', '-', '--no-playlist', url]
     if COOKIES_AVAILABLE:
         cmd.extend(['--cookies', COOKIES_FILE])
-        cmd.extend(['--extractor-args', 'youtube:player_client=web'])
     else:
         cmd.extend(['--extractor-args', 'youtube:player_client=android'])
 
@@ -145,7 +139,6 @@ def download_endpoint():
                 cmd = ['yt-dlp', '-f', 'bestvideo+bestaudio', '-o', '-', '--no-playlist', url]
                 if COOKIES_AVAILABLE:
                     cmd.extend(['--cookies', COOKIES_FILE])
-                    cmd.extend(['--extractor-args', 'youtube:player_client=web'])
                 # Determine filename from fallback
                 with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl2:
                     info2 = ydl2.extract_info(url, download=False)
