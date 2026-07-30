@@ -20,36 +20,41 @@ limiter = Limiter(
 limiter.init_app(app)
 
 # ---------- Cookies ----------
-COOKIES_FILE = os.environ.get('COOKIES_FILE')
-if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+COOKIES_FILE = os.environ.get('COOKIES_FILE', './cookies.txt')
+if os.path.exists(COOKIES_FILE):
     app.logger.info(f"✅ Cookies file found at {COOKIES_FILE}")
+    COOKIES_AVAILABLE = True
 else:
-    app.logger.warning("❌ Cookies file not found. Falling back to Android client (1080p).")
-    COOKIES_FILE = None
+    app.logger.warning(f"❌ Cookies file NOT found at {COOKIES_FILE}. Falling back to Android client.")
+    COOKIES_AVAILABLE = False
 
-# ---------- Core Fetch ----------
-def fetch_formats(url):
-    ydl_opts = {
+def get_ydl_opts(use_cookies=True):
+    opts = {
         'quiet': True,
         'no_warnings': True,
         'skip_download': True,
     }
-    if COOKIES_FILE:
-        ydl_opts['cookiefile'] = COOKIES_FILE
+    if use_cookies and COOKIES_AVAILABLE:
+        opts['cookiefile'] = COOKIES_FILE
+        app.logger.info("Using cookies for this request.")
     else:
-        ydl_opts['extractor_args'] = {
+        opts['extractor_args'] = {
             'youtube': {
                 'player_client': ['android'],
             }
         }
+        app.logger.info("Using Android client (no auth).")
+    return opts
 
+def fetch_formats(url):
+    ydl_opts = get_ydl_opts(use_cookies=COOKIES_AVAILABLE)
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             if info is None:
                 return None, "No info retrieved"
     except Exception as e:
-        app.logger.error(f"yt-dlp error: {e}")
+        app.logger.error(f"yt-dlp fetch error: {e}")
         return None, str(e)
 
     formats = []
@@ -87,7 +92,6 @@ def fetch_formats(url):
     formats.sort(key=lambda x: x['filesize'])
     return formats, None
 
-# ---------- Endpoints ----------
 @app.route('/ping', methods=['GET'])
 def ping():
     return 'OK', 200
@@ -119,7 +123,7 @@ def download_endpoint():
 
     # Build command
     cmd = ['yt-dlp', '-f', format_id, '-o', '-', '--no-playlist', url]
-    if COOKIES_FILE:
+    if COOKIES_AVAILABLE:
         cmd.extend(['--cookies', COOKIES_FILE])
     else:
         cmd.extend(['--extractor-args', 'youtube:player_client=android'])
@@ -127,21 +131,18 @@ def download_endpoint():
     app.logger.info(f"Download command: {' '.join(cmd)}")
 
     try:
-        # Get file extension
+        # Determine content type
         with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
             info = ydl.extract_info(url, download=False)
             chosen = next((f for f in info.get('formats', []) if f.get('format_id') == format_id), None)
             if not chosen:
-                # Fallback: pick the best video+audio combo
                 app.logger.warning(f"Format {format_id} not found. Falling back to bestvideo+bestaudio.")
-                # Rerun the command with bestvideo+bestaudio
                 cmd = ['yt-dlp', '-f', 'bestvideo+bestaudio', '-o', '-', '--no-playlist', url]
-                if COOKIES_FILE:
+                if COOKIES_AVAILABLE:
                     cmd.extend(['--cookies', COOKIES_FILE])
-                # Determine filename from the fallback
+                # Determine filename from fallback
                 with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl2:
                     info2 = ydl2.extract_info(url, download=False)
-                    # Find best formats
                     best_video = next((f for f in info2.get('formats', []) if f.get('vcodec') != 'none' and f.get('acodec') == 'none'), None)
                     best_audio = next((f for f in info2.get('formats', []) if f.get('acodec') != 'none' and f.get('vcodec') == 'none'), None)
                     if best_video and best_audio:
@@ -168,7 +169,7 @@ def download_endpoint():
                 proc.wait()
                 if proc.returncode != 0:
                     err = proc.stderr.read().decode()
-                    app.logger.error(f"yt-dlp error: {err}")
+                    app.logger.error(f"yt-dlp download error: {err}")
             except Exception as e:
                 app.logger.error(f"Streaming error: {e}")
             finally:
@@ -185,7 +186,12 @@ def download_endpoint():
             }
         )
     except Exception as e:
+        app.logger.error(f"Download endpoint error: {e}")
         return f"Error: {str(e)}", 500
+
+@app.route('/')
+def home():
+    return f"ClipSnag backend is running. Cookies: {'✅' if COOKIES_AVAILABLE else '❌'}"
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
