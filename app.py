@@ -1,12 +1,12 @@
 import os
 import json
 import subprocess
+import logging
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 import yt_dlp
-import logging
 
 app = Flask(__name__)
 CORS(app)
@@ -19,15 +19,16 @@ limiter = Limiter(
 )
 limiter.init_app(app)
 
-# ---------- Environment ----------
+# ---------- Cookies ----------
 COOKIES_FILE = os.environ.get('COOKIES_FILE')
-if COOKIES_FILE and not os.path.exists(COOKIES_FILE):
-    app.logger.warning(f"Cookies file {COOKIES_FILE} not found. Will fallback to Android client.")
+if COOKIES_FILE and os.path.exists(COOKIES_FILE):
+    app.logger.info(f"✅ Cookies file found at {COOKIES_FILE}")
+else:
+    app.logger.warning("❌ Cookies file not found. Falling back to Android client (1080p).")
     COOKIES_FILE = None
 
 # ---------- Core Fetch ----------
 def fetch_formats(url):
-    # Build yt-dlp options
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -36,7 +37,6 @@ def fetch_formats(url):
     if COOKIES_FILE:
         ydl_opts['cookiefile'] = COOKIES_FILE
     else:
-        # Fallback: Android client (no auth, 1080p max)
         ydl_opts['extractor_args'] = {
             'youtube': {
                 'player_client': ['android'],
@@ -124,22 +124,37 @@ def download_endpoint():
     else:
         cmd.extend(['--extractor-args', 'youtube:player_client=android'])
 
+    app.logger.info(f"Download command: {' '.join(cmd)}")
+
     try:
-        # Determine content type
+        # Get file extension
         with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl:
             info = ydl.extract_info(url, download=False)
             chosen = next((f for f in info.get('formats', []) if f.get('format_id') == format_id), None)
-            if chosen:
+            if not chosen:
+                # Fallback: pick the best video+audio combo
+                app.logger.warning(f"Format {format_id} not found. Falling back to bestvideo+bestaudio.")
+                # Rerun the command with bestvideo+bestaudio
+                cmd = ['yt-dlp', '-f', 'bestvideo+bestaudio', '-o', '-', '--no-playlist', url]
+                if COOKIES_FILE:
+                    cmd.extend(['--cookies', COOKIES_FILE])
+                # Determine filename from the fallback
+                with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl2:
+                    info2 = ydl2.extract_info(url, download=False)
+                    # Find best formats
+                    best_video = next((f for f in info2.get('formats', []) if f.get('vcodec') != 'none' and f.get('acodec') == 'none'), None)
+                    best_audio = next((f for f in info2.get('formats', []) if f.get('acodec') != 'none' and f.get('vcodec') == 'none'), None)
+                    if best_video and best_audio:
+                        ext = best_video.get('ext', 'mp4')
+                        filename = f"video.{ext}"
+                        ct = {'mp4': 'video/mp4', 'm4v': 'video/mp4', 'webm': 'video/webm', 'mp3': 'audio/mpeg', 'm4a': 'audio/mp4'}.get(ext, 'application/octet-stream')
+                    else:
+                        filename = 'video.mp4'
+                        ct = 'video/mp4'
+            else:
                 ext = chosen.get('ext', 'mp4')
                 filename = f"video.{ext}"
-                ct = {
-                    'mp4': 'video/mp4', 'm4v': 'video/mp4', 'webm': 'video/webm',
-                    'mp3': 'audio/mpeg', 'm4a': 'audio/mp4'
-                }.get(ext, 'application/octet-stream')
-            else:
-                ext = 'bin'
-                filename = 'download.bin'
-                ct = 'application/octet-stream'
+                ct = {'mp4': 'video/mp4', 'm4v': 'video/mp4', 'webm': 'video/webm', 'mp3': 'audio/mpeg', 'm4a': 'audio/mp4'}.get(ext, 'application/octet-stream')
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
