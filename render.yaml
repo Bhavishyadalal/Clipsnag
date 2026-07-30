@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: clipsnag-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 4 -b 0.0.0.0:$PORT app:app
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10.0
