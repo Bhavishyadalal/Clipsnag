@@ -12,12 +12,12 @@ app = Flask(__name__)
 CORS(app)
 logging.basicConfig(level=logging.INFO)
 
-# ---------- Rate Limiting ----------
+# ---------- Rate Limiting (fixed) ----------
 limiter = Limiter(
-    app,
     key_func=get_remote_address,
     default_limits=["5 per minute", "50 per hour"]
 )
+limiter.init_app(app)
 
 # ---------- Environment Variables ----------
 PO_TOKEN = os.environ.get('PO_TOKEN', None)
