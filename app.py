@@ -36,7 +36,12 @@ def get_ydl_opts(use_cookies=True):
     }
     if use_cookies and COOKIES_AVAILABLE:
         opts['cookiefile'] = COOKIES_FILE
-        app.logger.info("Using cookies for this request.")
+        opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['web'],
+            }
+        }
+        app.logger.info("Using cookies with web client.")
     else:
         opts['extractor_args'] = {
             'youtube': {
@@ -121,10 +126,10 @@ def download_endpoint():
     if not url or not format_id:
         return 'Missing url or format_id', 400
 
-    # Build command
     cmd = ['yt-dlp', '-f', format_id, '-o', '-', '--no-playlist', url]
     if COOKIES_AVAILABLE:
         cmd.extend(['--cookies', COOKIES_FILE])
+        cmd.extend(['--extractor-args', 'youtube:player_client=web'])
     else:
         cmd.extend(['--extractor-args', 'youtube:player_client=android'])
 
@@ -140,6 +145,7 @@ def download_endpoint():
                 cmd = ['yt-dlp', '-f', 'bestvideo+bestaudio', '-o', '-', '--no-playlist', url]
                 if COOKIES_AVAILABLE:
                     cmd.extend(['--cookies', COOKIES_FILE])
+                    cmd.extend(['--extractor-args', 'youtube:player_client=web'])
                 # Determine filename from fallback
                 with yt_dlp.YoutubeDL({'quiet': True, 'skip_download': True}) as ydl2:
                     info2 = ydl2.extract_info(url, download=False)
