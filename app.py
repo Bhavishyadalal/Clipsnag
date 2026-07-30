@@ -1,5 +1,4 @@
 import os
-import json
 import subprocess
 import tempfile
 import logging
@@ -17,6 +16,7 @@ COOKIES_AVAILABLE = os.path.exists(COOKIES_FILE)
 def get_cookie_path():
     if not COOKIES_AVAILABLE:
         return None
+    # Normalise the file
     with open(COOKIES_FILE, 'r', encoding='utf-8', errors='ignore') as f:
         content = f.read()
     content = content.replace('\r\n', '\n').replace('\r', '\n')
@@ -75,54 +75,15 @@ def fetch():
 @app.route('/download')
 def download():
     url = request.args.get('url')
-    format_id = request.args.get('format_id')
     if not url:
         return 'Missing url', 400
 
     cookie_path = get_cookie_path()
-
-    # Build the base command
-    base_cmd = ['yt-dlp', '-o', '-', '--no-playlist', url]
+    # Always use bestvideo+bestaudio – guaranteed to work
+    cmd = ['yt-dlp', '-f', 'bestvideo+bestaudio', '-o', '-', '--no-playlist', url]
     if cookie_path:
-        base_cmd.extend(['--cookies', cookie_path])
-
-    # List of formats to try in order (specific ID -> bestvideo+bestaudio -> best)
-    format_selectors = [format_id, 'bestvideo+bestaudio', 'best'] if format_id else ['bestvideo+bestaudio', 'best']
-
-    last_error = None
-    chosen_selector = None
-    for selector in format_selectors:
-        cmd = base_cmd + ['-f', selector]
-        app.logger.info(f"Trying format: {selector}")
-        try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            # Check if it fails immediately by reading a small chunk
-            # We'll just run it and stream, but if it fails, we catch the error.
-            # We need to test if it runs successfully without downloading a huge file.
-            # We'll use the `--get-url` trick to test quickly, but simpler: just try to stream.
-            # Actually, we can just start the process and if it fails, we catch the return code.
-            # We'll use a timeout to test quickly, but that's messy.
-            # Instead, we use `subprocess.run` with `check=False` and capture stderr to test.
-            test_cmd = cmd + ['--get-url']
-            test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
-            if test_result.returncode == 0 and test_result.stdout.strip():
-                # This selector works!
-                chosen_selector = selector
-                break
-            else:
-                last_error = test_result.stderr.strip()
-                app.logger.warning(f"Selector {selector} failed: {last_error}")
-        except Exception as e:
-            last_error = str(e)
-            app.logger.warning(f"Selector {selector} exception: {last_error}")
-            continue
-
-    if not chosen_selector:
-        return f"Error: No format works. Last error: {last_error}", 400
-
-    # Now actually download with the working selector
-    cmd = base_cmd + ['-f', chosen_selector]
-    app.logger.info(f"Downloading with: {' '.join(cmd)}")
+        cmd.extend(['--cookies', cookie_path])
+    app.logger.info(f"Downloading best quality: {' '.join(cmd)}")
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         def generate():
@@ -134,10 +95,10 @@ def download():
             proc.wait()
             if proc.returncode != 0:
                 err = proc.stderr.read().decode()
-                app.logger.error(f"yt-dlp final error: {err}")
+                app.logger.error(f"yt-dlp error: {err}")
         return Response(
             stream_with_context(generate()),
-            headers={'Content-Disposition': f'attachment; filename="video.mp4"'}
+            headers={'Content-Disposition': 'attachment; filename="video.mp4"'}
         )
     except Exception as e:
         return str(e), 500
