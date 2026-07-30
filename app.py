@@ -1,6 +1,9 @@
 import os
 import subprocess
+import tempfile
 import logging
+import random
+import requests
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import yt_dlp
@@ -9,31 +12,76 @@ app = Flask(__name__)
 CORS(app)
 logging.basicConfig(level=logging.INFO)
 
-# ---------- Configuration ----------
-# List of clients to try in order (Android is usually best, but fallbacks matter)
-CLIENTS = ['android', 'mweb', 'web']
+# ---------- Environment ----------
+COOKIES_FILE = os.environ.get('COOKIES_FILE', './cookies.txt')
+COOKIES_AVAILABLE = os.path.exists(COOKIES_FILE)
+
+# ---------- Free Proxy Fetcher ----------
+def get_free_proxy():
+    """Fetch a random working SOCKS5/HTTP proxy from the free-proxy-list."""
+    try:
+        resp = requests.get('https://raw.githubusercontent.com/iplocate/free-proxy-list/main/all-proxies.txt', timeout=10)
+        proxies = resp.text.strip().split('\n')
+        # Filter for SOCKS5 or HTTP (prefer SOCKS5)
+        valid = [p for p in proxies if 'socks5' in p or 'http' in p]
+        if valid:
+            proxy = random.choice(valid)
+            if 'socks5' in proxy:
+                return f"socks5://{proxy.split()[0]}"
+            else:
+                return f"http://{proxy.split()[0]}"
+    except Exception as e:
+        app.logger.error(f"Failed to fetch proxy: {e}")
+    return None
+
+def get_cookie_path():
+    if not COOKIES_AVAILABLE:
+        return None
+    with open(COOKIES_FILE, 'r', encoding='utf-8', errors='ignore') as f:
+        content = f.read()
+    content = content.replace('\r\n', '\n').replace('\r', '\n')
+    if not content.startswith('# Netscape HTTP Cookie File'):
+        content = '# Netscape HTTP Cookie File\n' + content
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
+    tmp.write(content)
+    tmp.close()
+    return tmp.name
 
 def fetch_formats_with_fallback(url):
-    """
-    Tries multiple YouTube clients to fetch formats.
-    Returns (formats, error) – formats is None if all fail.
-    """
-    last_error = None
-    for client in CLIENTS:
+    strategies = []
+
+    # Strategy 1: Cookies + Proxy (if available)
+    if COOKIES_AVAILABLE:
+        cookie_path = get_cookie_path()
+        proxy = get_free_proxy()  # fetch a fresh proxy each time
         opts = {
             'quiet': True,
             'no_warnings': True,
             'skip_download': True,
-            'extractor_args': {
-                'youtube': {
-                    'player_client': [client],
-                }
-            },
-            'user_agent': 'Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36'
+            'cookiefile': cookie_path,
         }
-        app.logger.info(f"🔄 Trying client: {client}")
+        if proxy:
+            opts['proxy'] = proxy
+            strategies.append({'name': f'Cookies + Proxy ({proxy})', 'opts': opts})
+        else:
+            strategies.append({'name': 'Cookies (no proxy)', 'opts': opts})
+
+    # Strategy 2: Android client (no auth)
+    strategies.append({
+        'name': 'Android (No Auth)',
+        'opts': {
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'extractor_args': {'youtube': {'player_client': ['android']}}
+        }
+    })
+
+    last_error = None
+    for strategy in strategies:
+        app.logger.info(f"🔄 Trying: {strategy['name']}")
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
+            with yt_dlp.YoutubeDL(strategy['opts']) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info is None:
                     continue
@@ -52,13 +100,14 @@ def fetch_formats_with_fallback(url):
                         'ext': f.get('ext','bin'),
                     })
                 formats.sort(key=lambda x: x['filesize_mb'])
-                app.logger.info(f"✅ Client {client} succeeded with {len(formats)} formats")
+                app.logger.info(f"✅ Success with {strategy['name']}: {len(formats)} formats")
                 return formats, None
         except Exception as e:
-            app.logger.warning(f"❌ Client {client} failed: {str(e)}")
+            app.logger.warning(f"❌ {strategy['name']} failed: {str(e)}")
             last_error = str(e)
             continue
-    return None, f"All clients failed. Last error: {last_error}"
+
+    return None, f"All strategies failed. Last error: {last_error}"
 
 @app.route('/ping')
 def ping():
@@ -68,12 +117,10 @@ def ping():
 def fetch():
     url = request.args.get('url')
     if not url:
-        return jsonify({'error': 'Missing url parameter'}), 400
+        return jsonify({'error': 'Missing url'}), 400
     formats, err = fetch_formats_with_fallback(url)
     if err:
         return jsonify({'error': err}), 400
-    if not formats:
-        return jsonify({'error': 'No formats found'}), 404
     return jsonify({'success': True, 'formats': formats})
 
 @app.route('/download')
@@ -83,62 +130,30 @@ def download():
     if not url:
         return 'Missing url', 400
 
-    # Try the specified format with Android first, fallback to best
-    if format_id:
-        # Try with Android first
-        cmd = [
-            'yt-dlp',
-            '-f', format_id,
-            '-o', '-',
-            '--no-playlist',
-            '--extractor-args', 'youtube:player_client=android',
-            '--user-agent', 'Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.120 Mobile Safari/537.36',
-            '--no-check-certificate',
-            url
-        ]
-        app.logger.info(f"⬇️ Downloading format {format_id} with Android")
-        try:
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            def generate():
-                while True:
-                    chunk = proc.stdout.read(8192)
-                    if not chunk:
-                        break
-                    yield chunk
-                proc.wait()
-                if proc.returncode != 0:
-                    err = proc.stderr.read().decode()
-                    app.logger.error(f"yt-dlp error: {err}")
-            return Response(
-                stream_with_context(generate()),
-                headers={'Content-Disposition': 'attachment; filename="video.mp4"'}
-            )
-        except Exception as e:
-            app.logger.error(f"Download with format_id failed: {e}")
-            # Fall through to fallback
-
-    # Fallback: download best single format using the first working client
-    # Re‑fetch formats to get a working client
+    # Re‑fetch formats using fallback to get a working list
     formats, err = fetch_formats_with_fallback(url)
     if err or not formats:
         return f"Error: {err}", 400
 
-    # Pick the best format (largest file size) from the successful list
-    best = formats[-1]
-    format_id = best['format_id']
-    # Determine which client succeeded (we can simply reuse the same method)
-    # But for simplicity, we'll use Android again – if it fails, the user gets an error.
-    # Better: use the same fallback in download as well.
-    # We'll just re‑run the command with the best format, no client override (use default)
-    cmd = [
-        'yt-dlp',
-        '-f', format_id,
-        '-o', '-',
-        '--no-playlist',
-        '--no-check-certificate',
-        url
-    ]
-    app.logger.info(f"⬇️ Fallback downloading best format: {format_id}")
+    # Pick best format (largest file) if format_id not given or not found
+    chosen = None
+    if format_id:
+        chosen = next((f for f in formats if f['format_id'] == format_id), None)
+    if not chosen:
+        chosen = formats[-1] if formats else None
+    if not chosen:
+        return 'No suitable format', 400
+
+    # Build command with the same method (use cookies if available and proxy if fetched)
+    cookie_path = get_cookie_path()
+    cmd = ['yt-dlp', '-f', chosen['format_id'], '-o', '-', '--no-playlist', url]
+    if cookie_path:
+        cmd.extend(['--cookies', cookie_path])
+        proxy = get_free_proxy()
+        if proxy:
+            cmd.extend(['--proxy', proxy])
+
+    app.logger.info(f"⬇️ Downloading: {' '.join(cmd)}")
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         def generate():
@@ -153,15 +168,14 @@ def download():
                 app.logger.error(f"yt-dlp error: {err}")
         return Response(
             stream_with_context(generate()),
-            headers={'Content-Disposition': f'attachment; filename="video.{best["ext"]}"'}
+            headers={'Content-Disposition': f'attachment; filename="video.{chosen["ext"]}"'}
         )
     except Exception as e:
-        app.logger.error(f"Download fallback failed: {e}")
         return str(e), 500
 
 @app.route('/')
 def home():
-    return "ClipSnag backend is running."
+    return f"ClipSnag backend. Cookies: {'✅' if COOKIES_AVAILABLE else '❌'}"
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
