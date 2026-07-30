@@ -17,7 +17,6 @@ COOKIES_AVAILABLE = os.path.exists(COOKIES_FILE)
 def get_cookie_path():
     if not COOKIES_AVAILABLE:
         return None
-    # Normalise the file (ensure LF line endings)
     with open(COOKIES_FILE, 'r', encoding='utf-8', errors='ignore') as f:
         content = f.read()
     content = content.replace('\r\n', '\n').replace('\r', '\n')
@@ -28,14 +27,19 @@ def get_cookie_path():
     tmp.close()
     return tmp.name
 
-def fetch_formats(url):
+def get_ydl_opts():
     cookie_path = get_cookie_path()
     opts = {'quiet': True, 'no_warnings': True, 'skip_download': True}
     if cookie_path:
         opts['cookiefile'] = cookie_path
+        app.logger.info("Using cookies")
     else:
         opts['extractor_args'] = {'youtube': {'player_client': ['android']}}
+        app.logger.info("Using Android (no auth)")
+    return opts
 
+def fetch_formats(url):
+    opts = get_ydl_opts()
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -82,29 +86,29 @@ def download():
     if not url:
         return 'Missing url', 400
 
-    # Re‑fetch formats with the same method to ensure we have the right list
+    # Re‑fetch formats using the **exact same method** as /fetch
     formats, err = fetch_formats(url)
     if err or not formats:
-        return f"Error fetching formats: {err}", 400
+        return f"Error: {err}", 400
 
-    # If format_id is provided, try to match it; otherwise, pick best video+audio
+    # Find the requested format
     chosen = None
     if format_id:
         chosen = next((f for f in formats if f['format_id'] == format_id), None)
     if not chosen:
-        # Pick the best video+audio combo (largest filesize is usually best)
+        # If not found, pick the best one (largest file)
         chosen = formats[-1] if formats else None
         if chosen:
             format_id = chosen['format_id']
 
     if not chosen:
-        return 'No suitable format found', 400
+        return 'No suitable format', 400
 
+    # Build download command using the SAME method
     cookie_path = get_cookie_path()
     cmd = ['yt-dlp', '-f', format_id, '-o', '-', '--no-playlist', url]
     if cookie_path:
         cmd.extend(['--cookies', cookie_path])
-    # If no cookies, we don't force a client – yt-dlp will use default
 
     app.logger.info(f"Downloading: {' '.join(cmd)}")
     try:
