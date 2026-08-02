@@ -1,113 +1,68 @@
 import os
-import subprocess
-import tempfile
+import json
+import aiohttp
+import asyncio
 import logging
-import random
-import requests
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
-import yt_dlp
+from urllib.parse import quote
+import requests
 
 app = Flask(__name__)
 CORS(app)
 logging.basicConfig(level=logging.INFO)
 
-# ---------- Environment ----------
-COOKIES_FILE = os.environ.get('COOKIES_FILE', './cookies.txt')
-COOKIES_AVAILABLE = os.path.exists(COOKIES_FILE)
+# ---------- API Configuration ----------
+API_URL = "https://yt-vid.hazex.workers.dev/"
 
-# ---------- Free Proxy Fetcher ----------
-def get_free_proxy():
-    """Fetch a random working SOCKS5/HTTP proxy from the free-proxy-list."""
+def fetch_formats_from_api(video_url):
+    """Fetch formats from the Hazex API."""
     try:
-        resp = requests.get('https://raw.githubusercontent.com/iplocate/free-proxy-list/main/all-proxies.txt', timeout=10)
-        proxies = resp.text.strip().split('\n')
-        # Filter for SOCKS5 or HTTP (prefer SOCKS5)
-        valid = [p for p in proxies if 'socks5' in p or 'http' in p]
-        if valid:
-            proxy = random.choice(valid)
-            if 'socks5' in proxy:
-                return f"socks5://{proxy.split()[0]}"
-            else:
-                return f"http://{proxy.split()[0]}"
+        encoded_url = quote(video_url, safe='')
+        request_url = f"{API_URL}?url={encoded_url}"
+        app.logger.info(f"Calling API: {request_url}")
+        
+        response = requests.get(request_url, timeout=30)
+        if response.status_code != 200:
+            app.logger.error(f"API returned {response.status_code}")
+            return None, f"API error: {response.status_code}"
+        
+        data = response.json()
+        if data.get("error", True):
+            return None, data.get("message", "Unknown API error")
+        
+        # Convert API format to frontend format
+        formats = []
+        
+        # Helper to add formats
+        def add_formats(category, type_label):
+            if category in data:
+                for item in data[category]:
+                    label = item.get("label", "Unknown")
+                    url = item.get("url", "")
+                    if url:
+                        formats.append({
+                            "format_id": f"{type_label}_{len(formats)}",
+                            "label": f"{type_label}: {label}",
+                            "url": url,
+                            "resolution": label,
+                            "filesize_mb": 0,  # API doesn't provide file size
+                            "ext": "mp4" if "video" in type_label else "mp3",
+                            "type": "video" if "video" in type_label else "audio"
+                        })
+        
+        add_formats("video_with_audio", "Video+Audio")
+        add_formats("video_only", "Video Only")
+        add_formats("audio", "Audio")
+        
+        if not formats:
+            return None, "No formats found"
+        
+        return formats, None
+        
     except Exception as e:
-        app.logger.error(f"Failed to fetch proxy: {e}")
-    return None
-
-def get_cookie_path():
-    if not COOKIES_AVAILABLE:
-        return None
-    with open(COOKIES_FILE, 'r', encoding='utf-8', errors='ignore') as f:
-        content = f.read()
-    content = content.replace('\r\n', '\n').replace('\r', '\n')
-    if not content.startswith('# Netscape HTTP Cookie File'):
-        content = '# Netscape HTTP Cookie File\n' + content
-    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
-    tmp.write(content)
-    tmp.close()
-    return tmp.name
-
-def fetch_formats_with_fallback(url):
-    strategies = []
-
-    # Strategy 1: Cookies + Proxy (if available)
-    if COOKIES_AVAILABLE:
-        cookie_path = get_cookie_path()
-        proxy = get_free_proxy()  # fetch a fresh proxy each time
-        opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'skip_download': True,
-            'cookiefile': cookie_path,
-        }
-        if proxy:
-            opts['proxy'] = proxy
-            strategies.append({'name': f'Cookies + Proxy ({proxy})', 'opts': opts})
-        else:
-            strategies.append({'name': 'Cookies (no proxy)', 'opts': opts})
-
-    # Strategy 2: Android client (no auth)
-    strategies.append({
-        'name': 'Android (No Auth)',
-        'opts': {
-            'quiet': True,
-            'no_warnings': True,
-            'skip_download': True,
-            'extractor_args': {'youtube': {'player_client': ['android']}}
-        }
-    })
-
-    last_error = None
-    for strategy in strategies:
-        app.logger.info(f"🔄 Trying: {strategy['name']}")
-        try:
-            with yt_dlp.YoutubeDL(strategy['opts']) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if info is None:
-                    continue
-                formats = []
-                for f in info.get('formats', []):
-                    fid = f.get('format_id')
-                    if not fid:
-                        continue
-                    res = f.get('format_note') or f.get('resolution') or 'unknown'
-                    size = f.get('filesize') or f.get('filesize_approx')
-                    formats.append({
-                        'format_id': fid,
-                        'label': f"{res} ({f.get('ext','bin')})",
-                        'resolution': res,
-                        'filesize_mb': round(size/(1024*1024),1) if size else 0,
-                        'ext': f.get('ext','bin'),
-                    })
-                formats.sort(key=lambda x: x['filesize_mb'])
-                app.logger.info(f"✅ Success with {strategy['name']}: {len(formats)} formats")
-                return formats, None
-        except Exception as e:
-            app.logger.warning(f"❌ {strategy['name']} failed: {str(e)}")
-            last_error = str(e)
-            continue
-
-    return None, f"All strategies failed. Last error: {last_error}"
+        app.logger.error(f"API call failed: {e}")
+        return None, str(e)
 
 @app.route('/ping')
 def ping():
@@ -117,66 +72,58 @@ def ping():
 def fetch():
     url = request.args.get('url')
     if not url:
-        return jsonify({'error': 'Missing url'}), 400
-    formats, err = fetch_formats_with_fallback(url)
+        return jsonify({'error': 'Missing url parameter'}), 400
+    
+    formats, err = fetch_formats_from_api(url)
     if err:
         return jsonify({'error': err}), 400
-    return jsonify({'success': True, 'formats': formats})
+    if not formats:
+        return jsonify({'error': 'No formats found'}), 404
+    
+    return jsonify({
+        'success': True,
+        'formats': formats,
+        'title': "YouTube Video"
+    })
 
 @app.route('/download')
 def download():
+    """Proxy the download URL from the API."""
     url = request.args.get('url')
-    format_id = request.args.get('format_id')
     if not url:
-        return 'Missing url', 400
-
-    # Re‑fetch formats using fallback to get a working list
-    formats, err = fetch_formats_with_fallback(url)
-    if err or not formats:
-        return f"Error: {err}", 400
-
-    # Pick best format (largest file) if format_id not given or not found
-    chosen = None
-    if format_id:
-        chosen = next((f for f in formats if f['format_id'] == format_id), None)
-    if not chosen:
-        chosen = formats[-1] if formats else None
-    if not chosen:
-        return 'No suitable format', 400
-
-    # Build command with the same method (use cookies if available and proxy if fetched)
-    cookie_path = get_cookie_path()
-    cmd = ['yt-dlp', '-f', chosen['format_id'], '-o', '-', '--no-playlist', url]
-    if cookie_path:
-        cmd.extend(['--cookies', cookie_path])
-        proxy = get_free_proxy()
-        if proxy:
-            cmd.extend(['--proxy', proxy])
-
-    app.logger.info(f"⬇️ Downloading: {' '.join(cmd)}")
+        return 'Missing url parameter', 400
+    
+    # Forward to the actual download URL
     try:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Stream the download from the API URL
+        response = requests.get(url, stream=True, timeout=30)
+        if response.status_code != 200:
+            return f"Download failed: {response.status_code}", 400
+        
+        # Get content type and filename from response
+        content_type = response.headers.get('Content-Type', 'video/mp4')
+        
         def generate():
-            while True:
-                chunk = proc.stdout.read(8192)
-                if not chunk:
-                    break
-                yield chunk
-            proc.wait()
-            if proc.returncode != 0:
-                err = proc.stderr.read().decode()
-                app.logger.error(f"yt-dlp error: {err}")
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
+        
         return Response(
             stream_with_context(generate()),
-            headers={'Content-Disposition': f'attachment; filename="video.{chosen["ext"]}"'}
+            content_type=content_type,
+            headers={
+                'Content-Disposition': 'attachment; filename="video.mp4"',
+                'Cache-Control': 'no-cache'
+            }
         )
     except Exception as e:
+        app.logger.error(f"Download error: {e}")
         return str(e), 500
 
 @app.route('/')
 def home():
-    return f"ClipSnag backend. Cookies: {'✅' if COOKIES_AVAILABLE else '❌'}"
+    return "ClipSnag backend is running (Hazex API)."
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)
