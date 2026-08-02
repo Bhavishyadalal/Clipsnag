@@ -478,6 +478,47 @@
         return match ? match[1] : '';
     }
 
+    function cleanFormats(formats) {
+        return formats.map(f => {
+            let label = f.label || 'Unknown';
+            // Remove prefixes
+            label = label.replace(/^(Video\+Audio|Video Only|Audio):\s*/, '');
+            // Extract resolution from parentheses
+            const match = label.match(/\(([^)]+)\)/);
+            if (match) {
+                label = match[1];
+            }
+            // For audio, keep bitrate if present
+            const audioMatch = label.match(/(\d+kb\/s)/i);
+            if (audioMatch) {
+                label = audioMatch[1];
+            }
+            // Clean up: trim and handle fallback
+            label = label.trim() || f.label;
+            const icon = f.type === 'audio' ? '🎵' : '🎬';
+            const codec = f.codec || 'unknown';
+            const filesize_mb = f.filesize_mb || 0;
+            return {
+                icon: icon,
+                label: label,
+                codec: codec,
+                filesize_mb: filesize_mb,
+                format_id: f.format_id,
+                type: f.type,
+                url: f.url
+            };
+        }).sort((a, b) => {
+            // Video first, then audio
+            if (a.type === 'audio' && b.type !== 'audio') return 1;
+            if (a.type !== 'audio' && b.type === 'audio') return -1;
+            // Sort by resolution (highest first)
+            const resolutionOrder = { '2160p': 1, '1440p': 2, '1080p': 3, '720p': 4, '480p': 5, '360p': 6, '240p': 7, '144p': 8 };
+            const aOrder = resolutionOrder[a.label] || 99;
+            const bOrder = resolutionOrder[b.label] || 99;
+            return aOrder - bOrder;
+        });
+    }
+
     function init(){
         intervals.forEach(i => clearInterval(i));
         intervals = [];
@@ -523,7 +564,8 @@
             if(!formatContainer) return;
             let html = `<table class="format-table"><thead><tr><th>Format</th><th>Codec</th><th style="text-align:right;">Size</th><th style="text-align:right;">Action</th></tr></thead><tbody>`;
             formats.forEach((f, i) => {
-                html += `<tr><td class="label-col"><span class="icon">${f.icon}</span> ${f.label}</td><td class="codec">${f.codec}</td><td class="size" style="text-align:right;">${f.filesize_mb} MB</td><td style="text-align:right;"><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">Download</button></td></tr>`;
+                const sizeDisplay = f.filesize_mb && f.filesize_mb > 0 ? f.filesize_mb + ' MB' : '—';
+                html += `<tr><td class="label-col"><span class="icon">${f.icon}</span> ${f.label}</td><td class="codec">${f.codec}</td><td class="size" style="text-align:right;">${sizeDisplay}</td><td style="text-align:right;"><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">Download</button></td></tr>`;
             });
             html += `</tbody></table>`;
             formatContainer.innerHTML = html;
@@ -562,24 +604,18 @@
                     .then(res => res.json())
                     .then(data => {
                         if(data.error) { showToast('✗ '+data.error, true); fetchBtn.textContent='Fetch Formats'; fetchBtn.disabled=false; return; }
-                        const formats = data.formats.map(f => ({
-                            icon: f.type === 'audio' ? '🎵' : '🎬',
-                            label: f.label,
-                            codec: f.codec || 'unknown',
-                            filesize_mb: f.filesize_mb,
-                            format_id: f.format_id
-                        }));
+                        const cleaned = cleanFormats(data.formats);
                         if(infoCard) { infoCard.classList.add('show'); }
                         if(videoTitle) videoTitle.textContent = data.title || 'YouTube Video';
-                        if(videoDetails) videoDetails.textContent = formats.length + ' formats available';
+                        if(videoDetails) videoDetails.textContent = cleaned.length + ' formats available';
                         const vid = extractVideoId(url);
                         if(thumbnail && vid) thumbnail.src = `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
-                        renderTable(formats, url);
+                        renderTable(cleaned, url);
                         if(formatLabel) formatLabel.textContent = 'Available Formats';
                         fetchBtn.textContent = 'Fetch Formats';
                         fetchBtn.disabled = false;
                         if(subtitle) subtitle.innerHTML = `<span class="highlight">✓</span> Ready. Select a format to download.`;
-                        showToast('✓ '+formats.length+' formats loaded');
+                        showToast('✓ '+cleaned.length+' formats loaded');
                     })
                     .catch(err => {
                         showToast('✗ Network error: '+err.message, true);
@@ -706,6 +742,32 @@
         const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})(?:&|$)/);
         return match ? match[1] : '';
     }
+    function cleanFormats(formats) {
+        return formats.map(f => {
+            let label = f.label || 'Unknown';
+            label = label.replace(/^(Video\+Audio|Video Only|Audio):\s*/, '');
+            const match = label.match(/\(([^)]+)\)/);
+            if (match) label = match[1];
+            const audioMatch = label.match(/(\d+kb\/s)/i);
+            if (audioMatch) label = audioMatch[1];
+            label = label.trim() || f.label;
+            const icon = f.type === 'audio' ? '🎵' : '🎬';
+            return {
+                icon: icon,
+                label: label,
+                codec: f.codec || 'unknown',
+                filesize_mb: f.filesize_mb || 0,
+                format_id: f.format_id,
+                type: f.type,
+                url: f.url
+            };
+        }).sort((a, b) => {
+            if (a.type === 'audio' && b.type !== 'audio') return 1;
+            if (a.type !== 'audio' && b.type === 'audio') return -1;
+            const order = { '2160p':1, '1440p':2, '1080p':3, '720p':4, '480p':5, '360p':6, '240p':7, '144p':8 };
+            return (order[a.label] || 99) - (order[b.label] || 99);
+        });
+    }
     function init(){
         intervals.forEach(i => clearInterval(i));
         intervals = [];
@@ -761,7 +823,8 @@
                 tile.className = 'format-tile';
                 const type = f.type === 'audio' ? 'audio' : 'video';
                 tile.dataset.type = type;
-                tile.innerHTML = `<div class="top"><span class="icon">${f.icon}</span><span class="label">${f.label}</span></div><div class="sub">${f.codec}</div><div class="bottom"><span class="size">${f.filesize_mb} MB</span><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">⏏ Eject</button></div>`;
+                const sizeDisplay = f.filesize_mb && f.filesize_mb > 0 ? f.filesize_mb + ' MB' : '—';
+                tile.innerHTML = `<div class="top"><span class="icon">${f.icon}</span><span class="label">${f.label}</span></div><div class="sub">${f.codec}</div><div class="bottom"><span class="size">${sizeDisplay}</span><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">⏏ Eject</button></div>`;
                 formatGrid.appendChild(tile);
             });
             formatGrid.querySelectorAll('.btn-download').forEach(btn => {
@@ -812,22 +875,15 @@
                     .then(res => res.json())
                     .then(data => {
                         if(data.error) { showToast('✗ '+data.error, true); newFetchBtn.disabled=false; newFetchBtn.innerHTML='<span class="reel"><span class="center"></span></span> Extract Formats'; return; }
-                        const formats = data.formats.map(f => ({
-                            icon: f.type === 'audio' ? '🎵' : '🎬',
-                            label: f.label,
-                            codec: f.codec || 'unknown',
-                            filesize_mb: f.filesize_mb,
-                            format_id: f.format_id,
-                            type: f.type
-                        }));
+                        const cleaned = cleanFormats(data.formats);
                         stopCounter();
                         if(clockEl) clockEl.textContent = '0042.0';
                         if(infoCard) infoCard.classList.add('show');
                         if(videoTitle) videoTitle.textContent = data.title || 'Video';
-                        if(videoDetails) videoDetails.textContent = formats.length + ' formats';
+                        if(videoDetails) videoDetails.textContent = cleaned.length + ' formats';
                         const vid = extractVideoId(url);
                         if(thumbnail && vid) thumbnail.src = `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
-                        renderFormats(formats, url);
+                        renderFormats(cleaned, url);
                         if(formatLabel) formatLabel.textContent = '📼 Track List';
                         newFetchBtn.innerHTML = '<span class="reel"><span class="center"></span></span> Extract Formats';
                         if(newReel) newReel.classList.remove('active');
@@ -964,6 +1020,32 @@
         const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})(?:&|$)/);
         return match ? match[1] : '';
     }
+    function cleanFormats(formats) {
+        return formats.map(f => {
+            let label = f.label || 'Unknown';
+            label = label.replace(/^(Video\+Audio|Video Only|Audio):\s*/, '');
+            const match = label.match(/\(([^)]+)\)/);
+            if (match) label = match[1];
+            const audioMatch = label.match(/(\d+kb\/s)/i);
+            if (audioMatch) label = audioMatch[1];
+            label = label.trim() || f.label;
+            const icon = f.type === 'audio' ? '🎵' : '🎬';
+            return {
+                icon: icon,
+                label: label,
+                codec: f.codec || 'unknown',
+                filesize_mb: f.filesize_mb || 0,
+                format_id: f.format_id,
+                type: f.type,
+                url: f.url
+            };
+        }).sort((a, b) => {
+            if (a.type === 'audio' && b.type !== 'audio') return 1;
+            if (a.type !== 'audio' && b.type === 'audio') return -1;
+            const order = { '2160p':1, '1440p':2, '1080p':3, '720p':4, '480p':5, '360p':6, '240p':7, '144p':8 };
+            return (order[a.label] || 99) - (order[b.label] || 99);
+        });
+    }
     function init(){
         intervals.forEach(i => clearInterval(i));
         if(animFrameId) cancelAnimationFrame(animFrameId);
@@ -1056,7 +1138,8 @@
                 tile.className = 'format-tile';
                 const type = f.type === 'audio' ? 'audio' : 'video';
                 tile.dataset.type = type;
-                tile.innerHTML = `<div class="top"><span class="icon">${f.icon}</span><span class="label">${f.label}</span></div><div class="sub">${f.codec}</div><div class="bottom"><span class="size">${f.filesize_mb} MB</span><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">⏏ Eject</button></div>`;
+                const sizeDisplay = f.filesize_mb && f.filesize_mb > 0 ? f.filesize_mb + ' MB' : '—';
+                tile.innerHTML = `<div class="top"><span class="icon">${f.icon}</span><span class="label">${f.label}</span></div><div class="sub">${f.codec}</div><div class="bottom"><span class="size">${sizeDisplay}</span><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">⏏ Eject</button></div>`;
                 formatGrid.appendChild(tile);
             });
             formatGrid.querySelectorAll('.btn-download').forEach(btn => {
@@ -1107,23 +1190,16 @@
                     .then(res => res.json())
                     .then(data => {
                         if(data.error) { showToast('✗ '+data.error, true); fetchBtn.textContent='⟡ Extract Formats'; fetchBtn.disabled=false; clearInterval(wildInterval); if(canvas) canvas.classList.remove('active'); idleInterval=setInterval(idleWaveform,50); return; }
-                        const formats = data.formats.map(f => ({
-                            icon: f.type === 'audio' ? '🎵' : '🎬',
-                            label: f.label,
-                            codec: f.codec || 'unknown',
-                            filesize_mb: f.filesize_mb,
-                            format_id: f.format_id,
-                            type: f.type
-                        }));
+                        const cleaned = cleanFormats(data.formats);
                         clearInterval(wildInterval);
                         if(canvas) canvas.classList.remove('active');
                         idleInterval = setInterval(idleWaveform, 50);
                         if(infoCard) infoCard.classList.add('show');
                         if(videoTitle) videoTitle.textContent = data.title || 'Video';
-                        if(videoDetails) videoDetails.textContent = formats.length + ' formats';
+                        if(videoDetails) videoDetails.textContent = cleaned.length + ' formats';
                         const vid = extractVideoId(url);
                         if(thumbnail && vid) thumbnail.src = `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
-                        renderFormats(formats, url);
+                        renderFormats(cleaned, url);
                         if(formatLabel) formatLabel.textContent = 'Available Formats';
                         fetchBtn.textContent = '⟡ Extract Formats';
                         fetchBtn.disabled = false;
@@ -1274,6 +1350,32 @@
         const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})(?:&|$)/);
         return match ? match[1] : '';
     }
+    function cleanFormats(formats) {
+        return formats.map(f => {
+            let label = f.label || 'Unknown';
+            label = label.replace(/^(Video\+Audio|Video Only|Audio):\s*/, '');
+            const match = label.match(/\(([^)]+)\)/);
+            if (match) label = match[1];
+            const audioMatch = label.match(/(\d+kb\/s)/i);
+            if (audioMatch) label = audioMatch[1];
+            label = label.trim() || f.label;
+            const icon = f.type === 'audio' ? '🎵' : '🎬';
+            return {
+                icon: icon,
+                label: label,
+                codec: f.codec || 'unknown',
+                filesize_mb: f.filesize_mb || 0,
+                format_id: f.format_id,
+                type: f.type,
+                url: f.url
+            };
+        }).sort((a, b) => {
+            if (a.type === 'audio' && b.type !== 'audio') return 1;
+            if (a.type !== 'audio' && b.type === 'audio') return -1;
+            const order = { '2160p':1, '1440p':2, '1080p':3, '720p':4, '480p':5, '360p':6, '240p':7, '144p':8 };
+            return (order[a.label] || 99) - (order[b.label] || 99);
+        });
+    }
     function init(){
         intervals.forEach(i => clearInterval(i));
         const oldFetch = container.querySelector('#fetchBtn');
@@ -1322,7 +1424,8 @@
                 tile.className = 'format-tile';
                 const type = f.type === 'audio' ? 'audio' : 'video';
                 tile.dataset.type = type;
-                tile.innerHTML = `<div class="top"><span class="icon">${f.icon}</span><span class="label">${f.label}</span></div><div class="sub">${f.codec}</div><div class="bottom"><span class="size">${f.filesize_mb} MB</span><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">⏏ EJECT</button></div>`;
+                const sizeDisplay = f.filesize_mb && f.filesize_mb > 0 ? f.filesize_mb + ' MB' : '—';
+                tile.innerHTML = `<div class="top"><span class="icon">${f.icon}</span><span class="label">${f.label}</span></div><div class="sub">${f.codec}</div><div class="bottom"><span class="size">${sizeDisplay}</span><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">⏏ EJECT</button></div>`;
                 formatGrid.appendChild(tile);
             });
             formatGrid.querySelectorAll('.btn-download').forEach(btn => {
@@ -1371,21 +1474,14 @@
                     .then(res => res.json())
                     .then(data => {
                         if(data.error) { showToast('✗ '+data.error, true); fetchBtn.textContent='⟡ PRESS START ⟡'; fetchBtn.disabled=false; if(neonSweep) neonSweep.classList.remove('active'); return; }
-                        const formats = data.formats.map(f => ({
-                            icon: f.type === 'audio' ? '🎵' : '🎬',
-                            label: f.label,
-                            codec: f.codec || 'unknown',
-                            filesize_mb: f.filesize_mb,
-                            format_id: f.format_id,
-                            type: f.type
-                        }));
+                        const cleaned = cleanFormats(data.formats);
                         if(neonSweep) neonSweep.classList.remove('active');
                         if(infoCard) infoCard.classList.add('show');
                         if(videoTitle) videoTitle.textContent = data.title || 'Video';
-                        if(videoDetails) videoDetails.textContent = formats.length + ' formats';
+                        if(videoDetails) videoDetails.textContent = cleaned.length + ' formats';
                         const vid = extractVideoId(url);
                         if(thumbnail && vid) thumbnail.src = `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
-                        renderFormats(formats, url);
+                        renderFormats(cleaned, url);
                         if(formatLabel) formatLabel.textContent = '⟡ SELECT YOUR CHARACTER ⟡';
                         fetchBtn.textContent = '⟡ PRESS START ⟡';
                         fetchBtn.disabled = false;
@@ -1532,6 +1628,32 @@
         const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})(?:&|$)/);
         return match ? match[1] : '';
     }
+    function cleanFormats(formats) {
+        return formats.map(f => {
+            let label = f.label || 'Unknown';
+            label = label.replace(/^(Video\+Audio|Video Only|Audio):\s*/, '');
+            const match = label.match(/\(([^)]+)\)/);
+            if (match) label = match[1];
+            const audioMatch = label.match(/(\d+kb\/s)/i);
+            if (audioMatch) label = audioMatch[1];
+            label = label.trim() || f.label;
+            const icon = f.type === 'audio' ? '🎵' : '🎬';
+            return {
+                icon: icon,
+                label: label,
+                codec: f.codec || 'unknown',
+                filesize_mb: f.filesize_mb || 0,
+                format_id: f.format_id,
+                type: f.type,
+                url: f.url
+            };
+        }).sort((a, b) => {
+            if (a.type === 'audio' && b.type !== 'audio') return 1;
+            if (a.type !== 'audio' && b.type === 'audio') return -1;
+            const order = { '2160p':1, '1440p':2, '1080p':3, '720p':4, '480p':5, '360p':6, '240p':7, '144p':8 };
+            return (order[a.label] || 99) - (order[b.label] || 99);
+        });
+    }
     function init(){
         intervals.forEach(i => clearInterval(i));
         const oldFetch = container.querySelector('#fetchBtn');
@@ -1580,7 +1702,8 @@
             if(!checklistContainer) return;
             let html = '';
             formats.forEach((f, i) => {
-                html += `<div class="checklist-item"><span class="status ready">✓</span><div class="info"><span class="icon">${f.icon}</span><span class="label">${f.label}</span><span class="codec">${f.codec}</span></div><span class="size">${f.filesize_mb} MB</span><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">Download</button></div>`;
+                const sizeDisplay = f.filesize_mb && f.filesize_mb > 0 ? f.filesize_mb + ' MB' : '—';
+                html += `<div class="checklist-item"><span class="status ready">✓</span><div class="info"><span class="icon">${f.icon}</span><span class="label">${f.label}</span><span class="codec">${f.codec}</span></div><span class="size">${sizeDisplay}</span><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">Download</button></div>`;
             });
             checklistContainer.innerHTML = html;
             checklistContainer.querySelectorAll('.btn-download').forEach(btn => {
@@ -1646,24 +1769,16 @@
                         .then(res => res.json())
                         .then(data => {
                             if(data.error) { showToast('✗ '+data.error, true); fetchBtn.textContent='⟡ LAUNCH EXTRACTION'; fetchBtn.disabled=false; if(statusLabel) statusLabel.textContent='STANDBY'; return; }
-                            const formats = data.formats.map(f => ({
-                                icon: f.type === 'audio' ? '🎵' : '🎬',
-                                label: f.label,
-                                codec: f.codec || 'unknown',
-                                filesize_mb: f.filesize_mb,
-                                format_id: f.format_id,
-                                type: f.type
-                            }));
-                            if(statFormats) statFormats.textContent = formats.length;
-                            const largest = formats.reduce((a,b) => a.filesize_mb > b.filesize_mb ? a : b, formats[0]);
+                            const cleaned = cleanFormats(data.formats);
+                            if(statFormats) statFormats.textContent = cleaned.length;
+                            const largest = cleaned.reduce((a,b) => a.filesize_mb > b.filesize_mb ? a : b, cleaned[0]);
                             if(statLargest) statLargest.textContent = largest ? largest.filesize_mb + ' MB' : '–';
-                            // common res - skip for brevity
                             if(infoCard) infoCard.classList.add('show');
                             if(videoTitle) videoTitle.textContent = data.title || 'Video';
-                            if(videoDetails) videoDetails.textContent = formats.length + ' formats';
+                            if(videoDetails) videoDetails.textContent = cleaned.length + ' formats';
                             const vid = extractVideoId(url);
                             if(thumbnail && vid) thumbnail.src = `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
-                            renderChecklist(formats, url);
+                            renderChecklist(cleaned, url);
                             if(formatLabel) formatLabel.textContent = '⟡ SYSTEMS CHECKLIST';
                             fetchBtn.textContent = '⟡ LAUNCH EXTRACTION';
                             fetchBtn.disabled = false;
@@ -1787,6 +1902,32 @@
         const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})(?:&|$)/);
         return match ? match[1] : '';
     }
+    function cleanFormats(formats) {
+        return formats.map(f => {
+            let label = f.label || 'Unknown';
+            label = label.replace(/^(Video\+Audio|Video Only|Audio):\s*/, '');
+            const match = label.match(/\(([^)]+)\)/);
+            if (match) label = match[1];
+            const audioMatch = label.match(/(\d+kb\/s)/i);
+            if (audioMatch) label = audioMatch[1];
+            label = label.trim() || f.label;
+            const icon = f.type === 'audio' ? '🎵' : '🎬';
+            return {
+                icon: icon,
+                label: label,
+                codec: f.codec || 'unknown',
+                filesize_mb: f.filesize_mb || 0,
+                format_id: f.format_id,
+                type: f.type,
+                url: f.url
+            };
+        }).sort((a, b) => {
+            if (a.type === 'audio' && b.type !== 'audio') return 1;
+            if (a.type !== 'audio' && b.type === 'audio') return -1;
+            const order = { '2160p':1, '1440p':2, '1080p':3, '720p':4, '480p':5, '360p':6, '240p':7, '144p':8 };
+            return (order[a.label] || 99) - (order[b.label] || 99);
+        });
+    }
     function init(){
         intervals.forEach(i => clearInterval(i));
         const oldFetch = container.querySelector('#fetchBtn');
@@ -1836,7 +1977,8 @@
             formats.forEach((f, i) => {
                 const frame = document.createElement('div');
                 frame.className = 'frame';
-                frame.innerHTML = `<div class="top"><span class="icon">${f.icon}</span><span class="label">${f.label}</span></div><div class="codec">${f.codec}</div><div class="bottom"><span class="size">${f.filesize_mb} MB</span><button class="btn-frame" data-id="${f.format_id}" data-url="${originalUrl}">▶ Play</button></div>`;
+                const sizeDisplay = f.filesize_mb && f.filesize_mb > 0 ? f.filesize_mb + ' MB' : '—';
+                frame.innerHTML = `<div class="top"><span class="icon">${f.icon}</span><span class="label">${f.label}</span></div><div class="codec">${f.codec}</div><div class="bottom"><span class="size">${sizeDisplay}</span><button class="btn-frame" data-id="${f.format_id}" data-url="${originalUrl}">▶ Play</button></div>`;
                 filmstrip.appendChild(frame);
             });
             filmstrip.querySelectorAll('.btn-frame').forEach(btn => {
@@ -1867,18 +2009,12 @@
                     .then(res => res.json())
                     .then(data => {
                         if(data.error) { showToast('✗ '+data.error, true); fetchBtn.textContent='⟡ Load Film'; fetchBtn.disabled=false; return; }
-                        const formats = data.formats.map(f => ({
-                            icon: f.type === 'audio' ? '🎵' : '🎬',
-                            label: f.label,
-                            codec: f.codec || 'unknown',
-                            filesize_mb: f.filesize_mb,
-                            format_id: f.format_id
-                        }));
-                        renderFilmstrip(formats, url);
+                        const cleaned = cleanFormats(data.formats);
+                        renderFilmstrip(cleaned, url);
                         if(subtitle) subtitle.innerHTML = `<span class="highlight">✓</span> Film loaded — choose a frame to play.`;
                         fetchBtn.textContent = '⟡ Load Film';
                         fetchBtn.disabled = false;
-                        showToast('🎞️ '+formats.length+' frames loaded');
+                        showToast('🎞️ '+cleaned.length+' frames loaded');
                     })
                     .catch(err => {
                         showToast('✗ Network error: '+err.message, true);
@@ -1997,6 +2133,32 @@
         const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})(?:&|$)/);
         return match ? match[1] : '';
     }
+    function cleanFormats(formats) {
+        return formats.map(f => {
+            let label = f.label || 'Unknown';
+            label = label.replace(/^(Video\+Audio|Video Only|Audio):\s*/, '');
+            const match = label.match(/\(([^)]+)\)/);
+            if (match) label = match[1];
+            const audioMatch = label.match(/(\d+kb\/s)/i);
+            if (audioMatch) label = audioMatch[1];
+            label = label.trim() || f.label;
+            const icon = f.type === 'audio' ? '🎵' : '🎬';
+            return {
+                icon: icon,
+                label: label,
+                codec: f.codec || 'unknown',
+                filesize_mb: f.filesize_mb || 0,
+                format_id: f.format_id,
+                type: f.type,
+                url: f.url
+            };
+        }).sort((a, b) => {
+            if (a.type === 'audio' && b.type !== 'audio') return 1;
+            if (a.type !== 'audio' && b.type === 'audio') return -1;
+            const order = { '2160p':1, '1440p':2, '1080p':3, '720p':4, '480p':5, '360p':6, '240p':7, '144p':8 };
+            return (order[a.label] || 99) - (order[b.label] || 99);
+        });
+    }
     function init(){
         intervals.forEach(i => clearInterval(i));
         const oldFetch = container.querySelector('#fetchBtn');
@@ -2075,7 +2237,8 @@
             card.className = 'swipe-card';
             card.dataset.index = currentIndex;
             const side = format.type === 'audio' ? 'B' : 'A';
-            card.innerHTML = `<span class="side-label">Side ${side}</span><div class="content"><div class="icon">${format.icon}</div><div class="label">${format.label}</div><div class="codec">${format.codec}</div></div><div class="bottom-row"><span class="size">${format.filesize_mb} MB</span><button class="btn-download" data-id="${format.format_id}" data-url="${format.url}">⬇ Download</button></div>`;
+            const sizeDisplay = format.filesize_mb && format.filesize_mb > 0 ? format.filesize_mb + ' MB' : '—';
+            card.innerHTML = `<span class="side-label">Side ${side}</span><div class="content"><div class="icon">${format.icon}</div><div class="label">${format.label}</div><div class="codec">${format.codec}</div></div><div class="bottom-row"><span class="size">${sizeDisplay}</span><button class="btn-download" data-id="${format.format_id}" data-url="${format.url}">⬇ Download</button></div>`;
             cardWrapper.innerHTML = '';
             cardWrapper.appendChild(card);
             card.querySelector('.btn-download').addEventListener('click', function(e) {
@@ -2113,15 +2276,8 @@
                     .then(res => res.json())
                     .then(data => {
                         if(data.error) { showToast('✗ '+data.error, true); fetchBtn.textContent='⟡ Drop Needle'; fetchBtn.disabled=false; if(vinyl) vinyl.classList.remove('spinning'); if(needle) needle.classList.remove('active'); return; }
-                        const formats = data.formats.map(f => ({
-                            icon: f.type === 'audio' ? '🎵' : '🎬',
-                            label: f.label,
-                            codec: f.codec || 'unknown',
-                            filesize_mb: f.filesize_mb,
-                            format_id: f.format_id,
-                            type: f.type
-                        }));
-                        resetDeck(formats, url);
+                        const cleaned = cleanFormats(data.formats);
+                        resetDeck(cleaned, url);
                         if(subtitle) subtitle.innerHTML = `<span class="highlight">✓</span> Ready. Swipe left to skip, right to download.`;
                         fetchBtn.textContent = '⟡ Drop Needle';
                         fetchBtn.disabled = false;
@@ -2244,6 +2400,32 @@
         const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})(?:&|$)/);
         return match ? match[1] : '';
     }
+    function cleanFormats(formats) {
+        return formats.map(f => {
+            let label = f.label || 'Unknown';
+            label = label.replace(/^(Video\+Audio|Video Only|Audio):\s*/, '');
+            const match = label.match(/\(([^)]+)\)/);
+            if (match) label = match[1];
+            const audioMatch = label.match(/(\d+kb\/s)/i);
+            if (audioMatch) label = audioMatch[1];
+            label = label.trim() || f.label;
+            const icon = f.type === 'audio' ? '🎵' : '🎬';
+            return {
+                icon: icon,
+                label: label,
+                codec: f.codec || 'unknown',
+                filesize_mb: f.filesize_mb || 0,
+                format_id: f.format_id,
+                type: f.type,
+                url: f.url
+            };
+        }).sort((a, b) => {
+            if (a.type === 'audio' && b.type !== 'audio') return 1;
+            if (a.type !== 'audio' && b.type === 'audio') return -1;
+            const order = { '2160p':1, '1440p':2, '1080p':3, '720p':4, '480p':5, '360p':6, '240p':7, '144p':8 };
+            return (order[a.label] || 99) - (order[b.label] || 99);
+        });
+    }
     function init(){
         intervals.forEach(i => clearInterval(i));
         const oldSend = container.querySelector('#sendBtn');
@@ -2287,7 +2469,8 @@
             let optionsHtml = '';
             formats.forEach((f, i) => {
                 const trackingId = '#' + String(100000 + Math.floor(Math.random() * 900000));
-                optionsHtml += `<div class="ship-option" data-index="${i}"><span class="tracking">📦 ${trackingId}</span><div class="info"><span class="label">${f.icon} ${f.label}</span><span class="codec">${f.codec}</span></div><span class="size">${f.filesize_mb} MB</span><button class="btn-ship" data-id="${f.format_id}" data-url="${originalUrl}">Ship Now</button><div class="status-trail" id="trail-${i}"><span class="step done">📦 Packed</span><span class="arrow">→</span><span class="step" id="step2-${i}">🚚 In transit</span><span class="arrow">→</span><span class="step" id="step3-${i}">✅ Delivered</span></div></div>`;
+                const sizeDisplay = f.filesize_mb && f.filesize_mb > 0 ? f.filesize_mb + ' MB' : '—';
+                optionsHtml += `<div class="ship-option" data-index="${i}"><span class="tracking">📦 ${trackingId}</span><div class="info"><span class="label">${f.icon} ${f.label}</span><span class="codec">${f.codec}</span></div><span class="size">${sizeDisplay}</span><button class="btn-ship" data-id="${f.format_id}" data-url="${originalUrl}">Ship Now</button><div class="status-trail" id="trail-${i}"><span class="step done">📦 Packed</span><span class="arrow">→</span><span class="step" id="step2-${i}">🚚 In transit</span><span class="arrow">→</span><span class="step" id="step3-${i}">✅ Delivered</span></div></div>`;
             });
             const receiptHtml = `<div class="receipt"><div class="video-row"><img src="${thumbnailUrl}" alt="thumbnail" /><div class="meta"><div class="title">${videoTitle}</div><div class="details">${videoDetails}</div></div></div><hr class="divider" /><div style="font-weight:600; margin-bottom:6px; font-size:13px; letter-spacing:0.5px;">📦 Shipping Options:</div>${optionsHtml}<div style="font-family:var(--mono); font-size:10px; color:var(--ink-dim); margin-top:6px;">— click "Ship Now" to start delivery —</div></div>`;
             addMessage(receiptHtml, 'bot', 'receipt-msg');
@@ -2328,16 +2511,10 @@
                     .then(data => {
                         if(loadingMsg) loadingMsg.remove();
                         if(data.error) { showToast('✗ '+data.error, true); sendBtn.disabled=false; sendBtn.textContent='Send ✉️'; return; }
-                        const formats = data.formats.map(f => ({
-                            icon: f.type === 'audio' ? '🎵' : '🎬',
-                            label: f.label,
-                            codec: f.codec || 'unknown',
-                            filesize_mb: f.filesize_mb,
-                            format_id: f.format_id
-                        }));
+                        const cleaned = cleanFormats(data.formats);
                         const vid = extractVideoId(url);
                         const thumb = vid ? `https://img.youtube.com/vi/${vid}/hqdefault.jpg` : 'https://via.placeholder.com/140x80/f5ede4/3a2c1b?text=YT+thumb';
-                        renderReceipt(data.title || 'Video', formats.length+' formats', thumb, formats, url);
+                        renderReceipt(data.title || 'Video', cleaned.length+' formats', thumb, cleaned, url);
                         sendBtn.disabled = false;
                         sendBtn.textContent = 'Send ✉️';
                         if(urlInput) urlInput.value = '';
@@ -2475,6 +2652,32 @@
         const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})(?:&|$)/);
         return match ? match[1] : '';
     }
+    function cleanFormats(formats) {
+        return formats.map(f => {
+            let label = f.label || 'Unknown';
+            label = label.replace(/^(Video\+Audio|Video Only|Audio):\s*/, '');
+            const match = label.match(/\(([^)]+)\)/);
+            if (match) label = match[1];
+            const audioMatch = label.match(/(\d+kb\/s)/i);
+            if (audioMatch) label = audioMatch[1];
+            label = label.trim() || f.label;
+            const icon = f.type === 'audio' ? '🎵' : '🎬';
+            return {
+                icon: icon,
+                label: label,
+                codec: f.codec || 'unknown',
+                filesize_mb: f.filesize_mb || 0,
+                format_id: f.format_id,
+                type: f.type,
+                url: f.url
+            };
+        }).sort((a, b) => {
+            if (a.type === 'audio' && b.type !== 'audio') return 1;
+            if (a.type !== 'audio' && b.type === 'audio') return -1;
+            const order = { '2160p':1, '1440p':2, '1080p':3, '720p':4, '480p':5, '360p':6, '240p':7, '144p':8 };
+            return (order[a.label] || 99) - (order[b.label] || 99);
+        });
+    }
     function init(){
         intervals.forEach(i => clearInterval(i));
         const oldFetch = container.querySelector('#fetchBtn');
@@ -2541,10 +2744,11 @@
             container.style.display = 'block';
             emptyEl.style.display = 'none';
             downloadBtn.disabled = false;
+            const sizeDisplay = format.filesize_mb && format.filesize_mb > 0 ? format.filesize_mb + ' MB' : '—';
             const attrs = [
                 { key: 'Format', value: format.label },
                 { key: 'Codec', value: format.codec },
-                { key: 'File Size', value: format.filesize_mb + ' MB' },
+                { key: 'File Size', value: sizeDisplay },
                 { key: 'Format ID', value: format.format_id }
             ];
             let html = '';
@@ -2608,23 +2812,16 @@
                     .then(res => res.json())
                     .then(data => {
                         if(data.error) { showToast('✗ '+data.error, true); fetchBtn.textContent='⟡ Extract'; fetchBtn.disabled=false; return; }
-                        const fmts = data.formats.map(f => ({
-                            icon: f.type === 'audio' ? '🎵' : '🎬',
-                            label: f.label,
-                            codec: f.codec || 'unknown',
-                            filesize_mb: f.filesize_mb,
-                            format_id: f.format_id,
-                            url: url
-                        }));
-                        storedData = fmts;
-                        populateSelects(fmts);
+                        const cleaned = cleanFormats(data.formats);
+                        storedData = cleaned.map(f => ({ ...f, url: url }));
+                        populateSelects(cleaned);
                         if(selectA) selectA.disabled = false;
                         if(selectB) selectB.disabled = false;
                         if(compareBtn) compareBtn.disabled = false;
                         fetchBtn.textContent = '⟡ Extract';
                         fetchBtn.disabled = false;
                         if(subtitle) subtitle.innerHTML = `<span class="highlight">✓</span> Formats extracted — select two to compare.`;
-                        showToast(`📐 ${fmts.length} formats loaded`);
+                        showToast(`📐 ${cleaned.length} formats loaded`);
                         resetCompare();
                     })
                     .catch(err => {
@@ -2738,6 +2935,32 @@
         const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})(?:&|$)/);
         return match ? match[1] : '';
     }
+    function cleanFormats(formats) {
+        return formats.map(f => {
+            let label = f.label || 'Unknown';
+            label = label.replace(/^(Video\+Audio|Video Only|Audio):\s*/, '');
+            const match = label.match(/\(([^)]+)\)/);
+            if (match) label = match[1];
+            const audioMatch = label.match(/(\d+kb\/s)/i);
+            if (audioMatch) label = audioMatch[1];
+            label = label.trim() || f.label;
+            const icon = f.type === 'audio' ? '🎵' : '🎬';
+            return {
+                icon: icon,
+                label: label,
+                codec: f.codec || 'unknown',
+                filesize_mb: f.filesize_mb || 0,
+                format_id: f.format_id,
+                type: f.type,
+                url: f.url
+            };
+        }).sort((a, b) => {
+            if (a.type === 'audio' && b.type !== 'audio') return 1;
+            if (a.type !== 'audio' && b.type === 'audio') return -1;
+            const order = { '2160p':1, '1440p':2, '1080p':3, '720p':4, '480p':5, '360p':6, '240p':7, '144p':8 };
+            return (order[a.label] || 99) - (order[b.label] || 99);
+        });
+    }
     function init(){
         intervals.forEach(i => clearInterval(i));
 
@@ -2768,9 +2991,10 @@
             distillates.innerHTML = '';
             distillates.classList.add('show');
             formats.forEach((f, i) => {
+                const sizeDisplay = f.filesize_mb && f.filesize_mb > 0 ? f.filesize_mb + ' MB' : '—';
                 const item = document.createElement('div');
                 item.className = 'distillate-item';
-                item.innerHTML = `<span class="icon">${f.icon}</span><div class="info"><span class="label">${f.label}</span><span class="codec">${f.codec}</span><span class="size">${f.filesize_mb} MB</span></div><button class="btn-distill" data-id="${f.format_id}" data-url="${originalUrl}">⬇ Extract</button>`;
+                item.innerHTML = `<span class="icon">${f.icon}</span><div class="info"><span class="label">${f.label}</span><span class="codec">${f.codec}</span><span class="size">${sizeDisplay}</span></div><button class="btn-distill" data-id="${f.format_id}" data-url="${originalUrl}">⬇ Extract</button>`;
                 distillates.appendChild(item);
             });
             distillates.querySelectorAll('.btn-distill').forEach(btn => {
@@ -2803,16 +3027,10 @@
                     liquid.textContent = '🧪';
                     liquid.classList.remove('filling');
                     if(data.error) { showToast('✗ '+data.error, true); subtitle.innerHTML = `<span class="highlight">⟡</span> Failed.`; return; }
-                    const formats = data.formats.map(f => ({
-                        icon: f.type === 'audio' ? '🎵' : '🎬',
-                        label: f.label,
-                        codec: f.codec || 'unknown',
-                        filesize_mb: f.filesize_mb,
-                        format_id: f.format_id
-                    }));
-                    renderDistillates(formats, url);
+                    const cleaned = cleanFormats(data.formats);
+                    renderDistillates(cleaned, url);
                     subtitle.innerHTML = `<span class="highlight">✓</span> Distillation complete — choose a format.`;
-                    showToast(`🧪 ${formats.length} distillates ready`);
+                    showToast(`🧪 ${cleaned.length} distillates ready`);
                 })
                 .catch(err => {
                     clearInterval(interval);
@@ -2971,6 +3189,32 @@
         const match = url.match(/(?:v=|\/)([a-zA-Z0-9_-]{11})(?:&|$)/);
         return match ? match[1] : '';
     }
+    function cleanFormats(formats) {
+        return formats.map(f => {
+            let label = f.label || 'Unknown';
+            label = label.replace(/^(Video\+Audio|Video Only|Audio):\s*/, '');
+            const match = label.match(/\(([^)]+)\)/);
+            if (match) label = match[1];
+            const audioMatch = label.match(/(\d+kb\/s)/i);
+            if (audioMatch) label = audioMatch[1];
+            label = label.trim() || f.label;
+            const icon = f.type === 'audio' ? '🎵' : '🎬';
+            return {
+                icon: icon,
+                label: label,
+                codec: f.codec || 'unknown',
+                filesize_mb: f.filesize_mb || 0,
+                format_id: f.format_id,
+                type: f.type,
+                url: f.url
+            };
+        }).sort((a, b) => {
+            if (a.type === 'audio' && b.type !== 'audio') return 1;
+            if (a.type !== 'audio' && b.type === 'audio') return -1;
+            const order = { '2160p':1, '1440p':2, '1080p':3, '720p':4, '480p':5, '360p':6, '240p':7, '144p':8 };
+            return (order[a.label] || 99) - (order[b.label] || 99);
+        });
+    }
     function init(){
         intervals.forEach(i => clearInterval(i));
         const oldFetch = container.querySelector('#fetchBtn');
@@ -3002,7 +3246,8 @@
             formats.forEach((f, i) => {
                 const card = document.createElement('div');
                 card.className = 'format-card';
-                card.innerHTML = `<div class="top"><span class="icon">${f.icon}</span><span class="label">${f.label}</span></div><div class="codec">${f.codec}</div><div class="bottom"><span class="size">${f.filesize_mb} MB</span><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">⬇ Download</button></div>`;
+                const sizeDisplay = f.filesize_mb && f.filesize_mb > 0 ? f.filesize_mb + ' MB' : '—';
+                card.innerHTML = `<div class="top"><span class="icon">${f.icon}</span><span class="label">${f.label}</span></div><div class="codec">${f.codec}</div><div class="bottom"><span class="size">${sizeDisplay}</span><button class="btn-download" data-id="${f.format_id}" data-url="${originalUrl}">⬇ Download</button></div>`;
                 formatGrid.appendChild(card);
             });
             formatGrid.querySelectorAll('.btn-download').forEach(btn => {
@@ -3037,18 +3282,12 @@
                     .then(res => res.json())
                     .then(data => {
                         if(data.error) { showToast('✗ '+data.error, true); fetchBtn.textContent='⟡ Extract'; fetchBtn.disabled=false; return; }
-                        const formats = data.formats.map(f => ({
-                            icon: f.type === 'audio' ? '🎵' : '🎬',
-                            label: f.label,
-                            codec: f.codec || 'unknown',
-                            filesize_mb: f.filesize_mb,
-                            format_id: f.format_id
-                        }));
-                        renderGrid(formats, url);
+                        const cleaned = cleanFormats(data.formats);
+                        renderGrid(cleaned, url);
                         if(subtitle) subtitle.innerHTML = `<span class="highlight">✓</span> Formats ready — click Download.`;
                         fetchBtn.textContent = '⟡ Extract';
                         fetchBtn.disabled = false;
-                        showToast(`✦ ${formats.length} formats extracted`);
+                        showToast(`✦ ${cleaned.length} formats extracted`);
                     })
                     .catch(err => {
                         showToast('✗ Network error: '+err.message, true);
